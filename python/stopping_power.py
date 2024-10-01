@@ -47,11 +47,18 @@ class StoppingPower:
       self._sNuc = (1.1383, 0.01321, 0.21226, 0.19593)
 
     if ion_Z > 3:
-      self._ioncoeff = self.SCOEF[ion_Z-1]
-    self._coeff = self.SCOEF[target_Z-1]
+      self._ion_poly = self.SCOEF[ion_Z-1, 40:53]
+      self._ion_v5c = self.SCOEF[ion_Z-1, 88:93]
+      self._target_poly = self.SCOEF[target_Z-1, 53:66]
+    self._he_delta = -log(self.SCOEF[target_Z-1, (67 if ion_Z==1 else 68) if isGas else 66])
+    self._he_poly = self.SCOEF[target_Z-1, 69:80]
+    self._he_solid_poly = self.SCOEF[target_Z-1, 80:88]
 
-
+    m = 10*ion_Z if ion_Z <=3 else 20
+    self._A = self.SCOEF[target_Z-1, m:m+10]
     self._C = 7.0 if ion_Z == 1 else 4.0
+
+    # correction coefficient
     if target_Z in (2, 10, 18, 36, 54, 86): # noble gas
        self._correction = 1
     else:
@@ -63,8 +70,6 @@ class StoppingPower:
           if not gaseous:
              self._correction = 1 / self._correction
 
-    m = 10*ion_Z if ion_Z <=3 else 20
-    self._A = self.SCOEF[target_Z-1, m:m+19]
 
   def loadCoeff(self):
      StoppingPower.SCOEF = array([[float(v) for v in l[20:].split()] for l in open("SCOEF03.dat", "rt")])
@@ -128,32 +133,27 @@ class StoppingPower:
     eps = min(max(E, Emin), Emax)
 
     x = log(eps)
-    p1 = dot(self._ioncoeff[40:53], x**arange(13))
-    p2 = dot(self._coeff[53:66], x**arange(13))
+    p1 = dot(self._ion_poly, x**arange(13))
+    p2 = dot(self._target_poly, x**arange(13))
 
     val = 0.25 * self._ion_Z**2 * p1 * p2
 
     save_Z = self._ion_Z
     self._ion_Z = 2
-    Snuc_He = self.calc_S_elec_H(eps)
 
-
-    val *= Snuc_He
+    val *= self.calc_S_elec_H(eps)
 
     if E < Emin:
        val *= sqrt(E/Emin)
     elif E > Emax:
-       v5c = self._ioncoeff[88:93]
+       v5c = self._ion_v5c
        def f(e):
           x = log10(e) - v5c[1]
           m = 3 if x > 0 else 2
           y = v5c[0] + (1 - v5c[0]) / (1 + exp( -(x) / v5c[m]))
           return (y + v5c[4] * exp(-abs(x-1.3))) * self.calc_high_energy(e)
 
-       v50 = f(Emax)
-       v98 = f(E)
-
-       val *= v98 / v50
+       val *= f(E) / f(Emax)
 
     self._ion_Z = save_Z
 
@@ -163,27 +163,18 @@ class StoppingPower:
 
   def calc_high_energy(self, E_over_u):
     x = (1 + E_over_u / 931494)**-2
-
     var_40 = log(1022000 * (1-x) / x) + x - 1
     var_D0 = 1 - x
 
     x = log(E_over_u / 1000)
-
-
-    m = 66
-    if self._isGas:
-       m = 67 if self._ion_Z == 1 else 68
-
-    var_40 -= log(self._coeff[m])
-
-
     if self._isGas:
       var_A0 = 1.35 / E_over_u**0.4
     else:
       var_A0 = 1.5 / (E_over_u**0.4) + 45000 / (self._target_Z * E_over_u**1.6)
-      var_40 -= dot(self._coeff[80:88], x**arange(8))
-    var_40 -= dot(self._coeff[69:80], x**arange(11))
+      var_40 -= dot(self._he_solid_poly, x**arange(8))
+    var_40 -= dot(self._he_poly, x**arange(11))
     var_40 += 1e-3 * self._ion_Z * E_over_u * var_A0  / (1e-3 * E_over_u + var_A0)
+    var_40 += self._he_delta
 
     y2 = (self._ion_Z/137.036)**2 / var_D0
     var_40 -= y2 * (1.20206 - y2*(1.042-0.8549*y2+0.343*y2**2))
